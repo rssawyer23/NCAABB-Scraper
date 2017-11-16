@@ -8,23 +8,32 @@ TEST_GAME_URL = "http://site.api.espn.com/apis/site/v2/sports/basketball/mens-co
 GAME_URL_TEMPLATE = "http://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/summary?event=%s"
 # date_url = "http://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard?groups=50&dates=20161111&limit=300"
 DATE_URL_TEMPLATE = "http://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard?groups=50&dates=%s%s%s&limit=300"
+TOURNEY_DATE_URL_TEMPLATE = "http://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard?groups=100&dates=%s%s%s&limit=300"
 # output_file = "Data/testfile.csv"
 
 
 # Reformatting dates to be compatible with ESPN URL formats, then putting in template
-def format_date(day, month, year):
+def format_date(day, month, year, tournament=False):
     if len(str(day)) < 2:
         day = "0%d" % day
     if len(str(month)) < 2:
         month = "0%d" % month
-    return DATE_URL_TEMPLATE % (year, month, day)
+    if not tournament:
+        date_url = DATE_URL_TEMPLATE % (year, month, day)
+    else:
+        date_url = TOURNEY_DATE_URL_TEMPLATE % (year, month, day)
+    return date_url
 
 
 # Get a list of game summary urls to pass to individual game scraper from a date
 def get_urls_from_date(day, month, year, show=False):
-    date_url = format_date(day, month, year)
+    date_url = format_date(day, month, year, tournament=False)
     r = requests.get(date_url)
     game_urls = [GAME_URL_TEMPLATE % e['id'] for e in r.json()['events']]
+    if month == 3 or month == 4:  # March Madness Final Four can spill into April
+        t_date_url = format_date(day, month, year, tournament=True)
+        r = requests.get(t_date_url)
+        game_urls += [GAME_URL_TEMPLATE % e['id'] for e in r.json()['events']]
     if show:
         "%d games found for %s-%s-%s" % (len(game_urls), month, day, year)
     return game_urls
@@ -85,7 +94,7 @@ def get_game_info_extras(data_dict, show=False):
             attendance_ratio = "0.0"
         ref_string = ""
         for o in data_dict['gameInfo']['officials']:  # Not sure if this is variable length, so treating all refs as one hyphenated entry
-            ref_string += "%s-" % (o['displayName'])
+            ref_string += "%s-" % (o['displayName'].replace(",", ""))
         extra_string = "%s,%s,%s,%s,%s,%s,%s,%s" % (venue, city, state, zip_code, str(capacity), str(attendance), attendance_ratio, ref_string)
     except KeyError:
         extra_string = "NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaNx"
@@ -125,6 +134,10 @@ def convert_game_to_string(url, date_string, show=False):
         output_string += get_game_info_extras(r.json(), show=show) + "\n"
         if show:
             print(output_string)
+
+        if home_stats_str == "" or away_stats_str == "":
+            output_string = "INVALID"
+
     except KeyError:
         if show:
             print("KeyError experienced")
@@ -143,18 +156,18 @@ def convert_game_to_string(url, date_string, show=False):
 # Function that determines if output file exists and first line matches proper header start
 def detect_header(output_filename):
     if not isfile(output_filename):
-        return False
+        return False, None
     else:
         with open(output_filename, 'r') as ofile:
             header = ofile.readline()
             if len(header.split(",")) > 1 and header.split(",")[0] == "GameID":
-                return True
+                return True, header
             else:
-                return False
+                return False, None
 
 
 def write_game_data_for_date_range(start_day, end_day, month, year, output_filename, show=False):
-    header_exists = detect_header(output_filename)
+    header_exists, header = detect_header(output_filename)
     last_date = "None"
     with open(output_filename, 'a') as f:
         if not header_exists:
@@ -176,8 +189,8 @@ def write_game_data_for_date_range(start_day, end_day, month, year, output_filen
 if __name__ == "__main__":
     # Arguments for looping through dates
     start_day = 1
-    end_day = 31
-    month = 1
+    end_day = 8
+    month = 4
     year = 2017
     show = True
     output_file = "Data/NCAABB1617_FullScores.csv"
