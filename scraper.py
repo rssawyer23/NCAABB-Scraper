@@ -11,14 +11,35 @@ DATE_URL_TEMPLATE = "http://site.api.espn.com/apis/site/v2/sports/basketball/men
 TOURNEY_DATE_URL_TEMPLATE = "http://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard?groups=100&dates=%s%s%s&limit=300"
 # output_file = "Data/testfile.csv"
 
+TEST_NBA_GAME_URL = 'http://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event=400975049'
+NBA_GAME_URL_TEMPLATE = 'http://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event=%s'
+NBA_DATE_URL_TEMPLATE = "http://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=%s%s%s&limit=30"
+
+
+# Function for getting home and away scores by quarter
+def get_quarter_scores(play_list):
+    current_quarter = 1
+    current_score = (0,0)
+    home_quarters = []
+    away_quarters = []
+    for p in play_list:
+        if p['period']['number'] != current_quarter and p['period']['number'] <= 4:
+            away_quarters.append(str(current_score[0]))
+            home_quarters.append(str(current_score[1]))
+            current_quarter = p['period']['number']
+        current_score = (p['awayScore'], p['homeScore'])
+    return ",".join(home_quarters)+",", ",".join(away_quarters)+","
+
 
 # Reformatting dates to be compatible with ESPN URL formats, then putting in template
-def format_date(day, month, year, tournament=False):
+def format_date(day, month, year, tournament=False, nba=False):
     if len(str(day)) < 2:
         day = "0%d" % day
     if len(str(month)) < 2:
         month = "0%d" % month
-    if not tournament:
+    if nba:
+        date_url = NBA_DATE_URL_TEMPLATE % (year, month, day)
+    elif not tournament:
         date_url = DATE_URL_TEMPLATE % (year, month, day)
     else:
         date_url = TOURNEY_DATE_URL_TEMPLATE % (year, month, day)
@@ -26,14 +47,15 @@ def format_date(day, month, year, tournament=False):
 
 
 # Get a list of game summary urls to pass to individual game scraper from a date
-def get_urls_from_date(day, month, year, show=False):
-    date_url = format_date(day, month, year, tournament=False)
+def get_urls_from_date(day, month, year, show=False, nba=False):
+    date_url = format_date(day, month, year, tournament=False, nba=nba)
     r = requests.get(date_url)
-    game_urls = [GAME_URL_TEMPLATE % e['id'] for e in r.json()['events']]
+    game_url_template = NBA_GAME_URL_TEMPLATE if nba else GAME_URL_TEMPLATE
+    game_urls = [game_url_template % e['id'] for e in r.json()['events']]
     if month == 3 or month == 4:  # March Madness Final Four can spill into April
-        t_date_url = format_date(day, month, year, tournament=True)
+        t_date_url = format_date(day, month, year, tournament=True, nba=nba)
         r = requests.get(t_date_url)
-        game_urls += [GAME_URL_TEMPLATE % e['id'] for e in r.json()['events']]
+        game_urls += [game_url_template % e['id'] for e in r.json()['events']]
     if show:
         "%d games found for %s-%s-%s" % (len(game_urls), month, day, year)
     return game_urls
@@ -63,8 +85,13 @@ def get_team_statistics(stat_list, show=False):
 
 
 # Generating header from the stat list labels using splits on made-attempted
-def generate_header(stat_list):
+def generate_header(stat_list, nba=False):
     header_string = "Name,id,FinalScore,"  # List of columns gathered for home and away teams
+    if nba:
+        spread = "Spread,"
+        header_string += "1stQ,2ndQ,3rdQ,"
+    else:
+        spread = ""
     for s in stat_list:  # Automatically determine what column names are from a statistics list
         if "Made-Attempted" not in s['label']:
             header_string += "%s," % s['label']
@@ -76,7 +103,7 @@ def generate_header(stat_list):
         for s in header_string[:-1].split(","):
             return_string += "%s-%s," % (loc, s)
     return_string += "Venue,City,State,Zip,Capacity,Attendance,AttendanceRatio,Referees"  # Extra columns not specific to home or away team but specific to game
-    return "GameID,Date," + return_string+"\n"
+    return "GameID,Date,"+ spread + return_string+"\n"
 
 
 # Function for getting additional game details from json
@@ -85,7 +112,10 @@ def get_game_info_extras(data_dict, show=False):
         venue = data_dict['gameInfo']['venue']['shortName']
         city = data_dict['gameInfo']['venue']['address']['city']
         state = data_dict['gameInfo']['venue']['address']['state']
-        zip_code = str(data_dict['gameInfo']['venue']['address']['zipCode'])
+        try:
+            zip_code = str(data_dict['gameInfo']['venue']['address']['zipCode'])
+        except KeyError:
+            zip_code = "NaN"
         capacity = data_dict['gameInfo']['venue']['capacity']
         attendance = data_dict['gameInfo']['attendance']
         try:
@@ -117,7 +147,7 @@ def calculate_score_from_dict(data_dict):
 
 
 # Wrapper which takes game event url from espn api and returns output string
-def convert_game_to_string(url, date_string, show=False):
+def convert_game_to_string(url, date_string, show=False, nba=False):
     try:
         r = requests.get(url)
         game_id = r.json()['header']['id'] + ","
@@ -130,13 +160,25 @@ def convert_game_to_string(url, date_string, show=False):
         home_score = calculate_score_from_dict(home_stats_dict) + ","
         away_score = calculate_score_from_dict(away_stats_dict) + ","
 
-        output_string = game_id + date_string + home_info + home_score + home_stats_str + away_info + away_score + away_stats_str
+        if nba:
+            try:
+                spread = str(r.json()['pickcenter'][0]['spread']) + ","
+            except KeyError:
+                spread = "NaN,"
+            except IndexError:
+                spread = "NaN,"
+            home_cumulative_quarters, away_cumulative_quarters = get_quarter_scores(r.json()['plays'])
+            output_string = game_id + date_string + spread \
+                            + home_info + home_score + home_cumulative_quarters + home_stats_str \
+                            + away_info + away_score + away_cumulative_quarters + away_stats_str
+        else:
+            output_string = game_id + date_string + home_info + home_score + home_stats_str + away_info + away_score + away_stats_str
         output_string += get_game_info_extras(r.json(), show=show) + "\n"
-        if show:
-            print(output_string)
 
         if home_stats_str == "" or away_stats_str == "":
             output_string = "INVALID"
+        if show:
+            print(output_string)
 
     except KeyError:
         if show:
@@ -166,40 +208,60 @@ def detect_header(output_filename):
                 return False, None
 
 
-def write_game_data_for_date_range(start_day, end_day, month, year, output_filename, show=False):
+def write_game_data_for_date_range(start_day, end_day, month, year, output_filename, show=False, nba=False):
     header_exists, header = detect_header(output_filename)
     last_date = "None"
     with open(output_filename, 'a') as f:
         if not header_exists:
-            header = generate_header(requests.get(TEST_GAME_URL).json()['boxscore']['teams'][1]['statistics'])
+            test_game_url = TEST_NBA_GAME_URL if nba else TEST_GAME_URL
+            header = generate_header(requests.get(test_game_url).json()['boxscore']['teams'][1]['statistics'], nba=nba)
             f.write(header)
         for day in range(start_day, end_day + 1):  # Looping through days in range for the month
-            date_game_urls = get_urls_from_date(day=day, month=month, year=year, show=show)  # Getting all game_urls for date
+            date_game_urls = get_urls_from_date(day=day, month=month, year=year, show=show, nba=nba)  # Getting all game_urls for date
             for game_url in date_game_urls:  # Looping through all extracted game_urls
                 output_string = convert_game_to_string(url=game_url,
-                                                       date_string="%d-%d-%d," % (day, month, year),
-                                                       show=show)  # Getting data for each game_url
+                                                       date_string="%d-%d-%d," % (month, day, year),
+                                                       show=show,
+                                                       nba=nba)  # Getting data for each game_url
                 if output_string != "INVALID":
                     f.write(output_string)  # Write the data from the game
-                    last_date = "%d-%d-%d" % (day, month, year)
+                    last_date = "%d-%d-%d" % (month, day, year)
             if show:
-                print("Finished %d-%d-%d" % (day, month, year))
+                print("Finished %d-%d-%d" % (month, day, year))
     return last_date
 
 if __name__ == "__main__":
     # Arguments for looping through dates
-    start_day = 1
-    end_day = 8
-    month = 4
-    year = 2017
+    start_year = 2015
+    leap_year = 1  # set to 1 if (start_year + 1) is a leap year, 0 otherwise
+    nba = True
     show = True
-    output_file = "Data/NCAABB1617_FullScores.csv"
 
-    last_date_scraped = write_game_data_for_date_range(start_day=start_day,
-                                                       end_day=end_day,
-                                                       month=month,
-                                                       year=year,
-                                                       output_filename=output_file,
-                                                       show=show)
-    if show:
-        print("Last date scraped %s" % last_date_scraped)
+    date_tuples = [(start_year, 10, 24, 31),  # Typically NBA Only, set start_day to after preseason ends
+                   (start_year, 11, 1, 30),
+                   (start_year, 12, 1, 31),
+                   (start_year+1, 1, 1, 31),
+                   (start_year+1, 2, 1, 28 + leap_year),
+                   (start_year+1, 3, 1, 31),
+                   (start_year+1, 4, 1, 30),
+                   (start_year+1, 5, 1, 31),  # NBA Only
+                   (start_year+1, 6, 1, 30)]  # NBA Only
+
+    league_string = "NBA" if nba else "NCAABB"
+    date_string = "%s%s" % (str(start_year)[-2:], str(start_year+1)[-2:])
+    output_file = "C:/Users/robsc/Documents/Data and Stats/ScrapedData/%s/%s%s_FullScores.csv" % (league_string, league_string, date_string)
+
+    for date_tuple in date_tuples:
+        year = date_tuple[0]
+        month = date_tuple[1]
+        start_day = date_tuple[2]
+        end_day = date_tuple[3]
+        last_date_scraped = write_game_data_for_date_range(start_day=start_day,
+                                                           end_day=end_day,
+                                                           month=month,
+                                                           year=year,
+                                                           output_filename=output_file,
+                                                           show=show,
+                                                           nba=nba)
+        if show:
+            print("Last date scraped %s" % last_date_scraped)
