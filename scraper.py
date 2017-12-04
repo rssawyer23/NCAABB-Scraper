@@ -2,6 +2,7 @@ import csv
 import json
 import requests
 from os.path import isfile
+import pandas as pd
 
 #url = "http://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/summary?event=400947324"
 TEST_GAME_URL = "http://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/summary?event=400986636"
@@ -232,8 +233,8 @@ def write_game_data_for_date_range(start_day, end_day, month, year, output_filen
 
 if __name__ == "__main__":
     # Arguments for looping through dates
-    start_year = 2015
-    leap_year = 1  # set to 1 if (start_year + 1) is a leap year, 0 otherwise
+    start_year = 2012
+    leap_year = 0  # set to 1 if (start_year + 1) is a leap year, 0 otherwise
     nba = True
     show = True
 
@@ -265,3 +266,8 @@ if __name__ == "__main__":
                                                            nba=nba)
         if show:
             print("Last date scraped %s" % last_date_scraped)
+
+    # Checking for and removing duplicates
+    data = pd.read_csv(output_file)
+    data = data.drop_duplicates(subset=['GameID'])
+    data.to_csv(output_file, index=False)
