@@ -51,14 +51,18 @@ def format_date(day, month, year, tournament=False, nba=False):
 def get_urls_from_date(day, month, year, show=False, nba=False):
     date_url = format_date(day, month, year, tournament=False, nba=nba)
     r = requests.get(date_url)
-    game_url_template = NBA_GAME_URL_TEMPLATE if nba else GAME_URL_TEMPLATE
-    game_urls = [game_url_template % e['id'] for e in r.json()['events']]
-    if month == 3 or month == 4:  # March Madness Final Four can spill into April
-        t_date_url = format_date(day, month, year, tournament=True, nba=nba)
-        r = requests.get(t_date_url)
-        game_urls += [game_url_template % e['id'] for e in r.json()['events']]
-    if show:
-        "%d games found for %s-%s-%s" % (len(game_urls), month, day, year)
+    try:
+        game_url_template = NBA_GAME_URL_TEMPLATE if nba else GAME_URL_TEMPLATE
+        game_urls = [game_url_template % e['id'] for e in r.json()['events']]
+        if month == 3 or month == 4:  # March Madness Final Four can spill into April
+            t_date_url = format_date(day, month, year, tournament=True, nba=nba)
+            r = requests.get(t_date_url)
+            game_urls += [game_url_template % e['id'] for e in r.json()['events']]
+        if show:
+            "%d games found for %s-%s-%s" % (len(game_urls), month, day, year)
+    except json.decoder.JSONDecodeError:
+        print("JSONDecodeError for %s-%s-%s" % (month, day, year))
+        game_urls = []
     return game_urls
 
 
@@ -87,12 +91,12 @@ def get_team_statistics(stat_list, show=False):
 
 # Generating header from the stat list labels using splits on made-attempted
 def generate_header(stat_list, nba=False):
-    header_string = "Name,id,FinalScore,"  # List of columns gathered for home and away teams
+    header_string = "Name,id,Rank,FinalScore,"  # List of columns gathered for home and away teams
     if nba:
         spread = "Spread,"
         header_string += "1stQ,2ndQ,3rdQ,"
     else:
-        spread = ""
+        spread = "Spread,OverUnder,"
     for s in stat_list:  # Automatically determine what column names are from a statistics list
         if "Made-Attempted" not in s['label']:
             header_string += "%s," % s['label']
@@ -103,8 +107,8 @@ def generate_header(stat_list, nba=False):
     for loc in ["Home","Away"]:
         for s in header_string[:-1].split(","):
             return_string += "%s-%s," % (loc, s)
-    return_string += "Venue,City,State,Zip,Capacity,Attendance,AttendanceRatio,Referees"  # Extra columns not specific to home or away team but specific to game
-    return "GameID,Date,"+ spread + return_string+"\n"
+    return_string += "Neutral,Conference,Venue,City,State,Zip,Capacity,Attendance,AttendanceRatio,Referees"  # Extra columns not specific to home or away team but specific to game
+    return "GameID,Date," + spread + return_string+"\n"
 
 
 # Function for getting additional game details from json
@@ -147,6 +151,59 @@ def calculate_score_from_dict(data_dict):
     return str(score)
 
 
+def _get_rank(team):
+    try:
+        rank = team['rank']
+    except KeyError:
+        rank = "0"
+    return str(rank)+","
+
+
+def _get_team_ranks(game_json):
+    """Return the away and home rankings of the competing teams"""
+    try:
+        home = game_json['header']['competitions'][0]['competitors'][0]
+        away = game_json['header']['competitions'][0]['competitors'][1]
+        home_rank = _get_rank(home)
+        away_rank = _get_rank(away)
+        return home_rank, away_rank
+    except KeyError:
+        return '-1', '-1'
+    except IndexError:
+        return '-1', '-1'
+
+
+def _get_neutral(game_json):
+    try:
+        neutral = game_json['header']['competitions'][0]['neutralSite']
+        return str(neutral) + ","
+    except KeyError:
+        return "NaN,"
+    except IndexError:
+        return "NaN,"
+
+
+def _get_conf_game(game_json):
+    try:
+        conf = game_json['header']['competitions'][0]['conferenceCompetition']
+        return str(conf) +","
+    except KeyError:
+        return "NaN,"
+    except IndexError:
+        return "NaN,"
+
+
+def _get_betting_info(game_json):
+    try:
+        spread = game_json['pickcenter'][0]['spread']
+        over_under = game_json['pickcenter'][0]['overUnder']
+        return str(spread)+",", str(over_under)+","
+    except KeyError:
+        return "NaN,", "NaN,"
+    except IndexError:
+        return "NaN,", "NaN,"
+
+
 # Wrapper which takes game event url from espn api and returns output string
 def convert_game_to_string(url, date_string, show=False, nba=False):
     try:
@@ -173,7 +230,13 @@ def convert_game_to_string(url, date_string, show=False, nba=False):
                             + home_info + home_score + home_cumulative_quarters + home_stats_str \
                             + away_info + away_score + away_cumulative_quarters + away_stats_str
         else:
-            output_string = game_id + date_string + home_info + home_score + home_stats_str + away_info + away_score + away_stats_str
+            home_rank, away_rank = _get_team_ranks(r.json())
+            neutral_site = _get_neutral(r.json())
+            conference_game = _get_conf_game(r.json())
+            home_spread, over_under = _get_betting_info(r.json())
+            output_string = game_id + date_string + home_spread + over_under + home_info + home_rank + home_score + \
+                            home_stats_str + away_info + away_rank + away_score + away_stats_str + \
+                            neutral_site + conference_game
         output_string += get_game_info_extras(r.json(), show=show) + "\n"
 
         if home_stats_str == "" or away_stats_str == "":
@@ -233,12 +296,13 @@ def write_game_data_for_date_range(start_day, end_day, month, year, output_filen
 
 if __name__ == "__main__":
     # Arguments for looping through dates
-    start_year = 2012
+    start_year = 2017
     leap_year = 0  # set to 1 if (start_year + 1) is a leap year, 0 otherwise
-    nba = True
+    nba = False
     show = True
 
-    date_tuples = [(start_year, 10, 24, 31),  # Typically NBA Only, set start_day to after preseason ends
+    # Should not need to change anything below this comment
+    nba_date_tuples = [(start_year, 10, 24, 31),  # Typically NBA Only, set start_day to after preseason ends
                    (start_year, 11, 1, 30),
                    (start_year, 12, 1, 31),
                    (start_year+1, 1, 1, 31),
@@ -248,9 +312,19 @@ if __name__ == "__main__":
                    (start_year+1, 5, 1, 31),  # NBA Only
                    (start_year+1, 6, 1, 30)]  # NBA Only
 
+    # ncaa_date_tuples = [(start_year, 11, 1, 30),
+    #                (start_year, 12, 1, 31),
+    #                (start_year+1, 1, 1, 31),
+    #                (start_year+1, 2, 1, 28 + leap_year),
+    #                (start_year+1, 3, 1, 31),
+    #                (start_year+1, 4, 1, 10)]
+
+    ncaa_date_tuples = [(start_year+1, 1, 23, 27)]
+
     league_string = "NBA" if nba else "NCAABB"
+    date_tuples = nba_date_tuples if nba else ncaa_date_tuples
     date_string = "%s%s" % (str(start_year)[-2:], str(start_year+1)[-2:])
-    output_file = "C:/Users/robsc/Documents/Data and Stats/ScrapedData/%s/%s%s_FullScores.csv" % (league_string, league_string, date_string)
+    output_file = "C:/Users/robsc/Documents/Data and Stats/ScrapedData/%s/%s%s_ESPN.csv" % (league_string, league_string, date_string)
 
     for date_tuple in date_tuples:
         year = date_tuple[0]
